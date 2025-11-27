@@ -6,33 +6,24 @@ import { setupServerResources } from './resources';
 import { setupServerPrompts } from './prompts';
 
 /**
- * TodoMcpServer extends McpHonoServerDO for CRUD operations on todo items
+ * ExampleMcpServer extends McpHonoServerDO
  */
 export class ExampleMcpServer extends McpHonoServerDO<Env> {
   constructor(ctx: DurableObjectState, env: Env) {
     super(ctx, env);
   }
 
-  /**
-   * Implementation of the required abstract method
-   */
   getImplementation(): Implementation {
     return {
-      name: 'ExampleMcpServer',
-      version: '1.0.0',
+      name: 'SurveySenseiMcpServer',
+      version: '0.1.0',
     };
   }
 
-  /**
-   * Implements the required abstract configureServer method
-   * Registers CRUD tools for the MCP server
-   */
   configureServer(server: McpServer): void {
-    // Create and set up tools and resources with our repository
-    setupServerTools(server);
+    // ⬅️ Pake this.ctx.storage, nggak usah deklar field baru
+    setupServerTools(server, this.ctx.storage);
     setupServerResources(server);
     setupServerPrompts(server);
   }
-
-  
-} 
+}

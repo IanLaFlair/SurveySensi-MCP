@@ -1,10 +1,70 @@
-import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
-import { z } from 'zod';
+import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
+import { z } from "zod";
 
-export function setupServerTools(server: McpServer) {
-  // ============================================================
-  // 1. PING TOOL
-  // ============================================================
+/**
+ * Basic types for SurveySensei
+ */
+
+export type ResponseStatus = "PENDING" | "VALID" | "REJECTED";
+
+export interface Survey {
+  id: string;
+  title: string;
+  description?: string;
+  questions: string[];
+  creatorWallet: string;
+  totalReward: number;
+  targetResponses: number;
+  createdAt: number;
+}
+
+export interface SurveyResponse {
+  id: string;
+  surveyId: string;
+  wallet: string;
+  answers: string[];
+  status: ResponseStatus;
+  createdAt: number;
+}
+
+/**
+ * Storage key helpers
+ */
+
+const surveyKey = (id: string) => `survey:${id}`;
+const responsePrefix = (surveyId: string) => `response:${surveyId}:`;
+const responseKey = (surveyId: string, responseId: string) =>
+  `${responsePrefix(surveyId)}${responseId}`;
+
+/**
+ * Simple answer evaluation helper
+ * (optional; mainly for debugging or future agents)
+ */
+function evaluateAnswerText(text: string) {
+  const trimmed = text.trim();
+  const length = trimmed.length;
+
+  const isValid = length >= 40;
+  const score = Math.min(10, Math.floor(length / 20));
+
+  const verdict: "VALID" | "REJECTED" = isValid ? "VALID" : "REJECTED";
+  const explanation = isValid
+    ? "Answer is long enough to likely be thoughtful and not spam."
+    : "Answer is too short and likely low-effort or spammy.";
+
+  return { verdict, score, length, explanation };
+}
+
+/**
+ * Main entry: register all tools
+ */
+export function setupServerTools(
+  server: McpServer,
+  storage: DurableObjectStorage
+) {
+  // -------------------------------------------------------------
+  // 1. Health check
+  // -------------------------------------------------------------
   server.tool(
     "ping",
     "Ping test tool to verify MCP server is responding",
@@ -14,40 +74,99 @@ export function setupServerTools(server: McpServer) {
         content: [
           {
             type: "text",
-            text: "pong 🚀 SurveySensei MCP is alive!",
-          }
-        ]
+            text: "pong 🚀 SurveySensei MCP + Durable Object is alive!",
+          },
+        ],
       };
     }
   );
 
-  // ============================================================
-  // 2. SCORE ANSWER (Validator simple)
-  // ============================================================
+  // -------------------------------------------------------------
+  // 2. Standalone answer scoring (optional debugging tool)
+  // -------------------------------------------------------------
   server.tool(
     "scoreSurveyAnswer",
-    "Score and validate a survey answer with simple heuristics",
+    "Score and validate a single survey answer using simple heuristics",
     {
-      answer: z.string().describe("Jawaban survei dari responden")
+      answer: z.string().describe("Free-text survey answer from a respondent"),
     },
     async ({ answer }) => {
-      const length = answer.trim().length;
+      const result = evaluateAnswerText(answer);
 
-      // simple heuristic
-      const isValid = length >= 20;
-      const score = Math.min(5, Math.floor(length / 20) + 1);
+      return {
+        content: [
+          {
+            type: "text",
+            text: JSON.stringify(result, null, 2),
+          },
+        ],
+      };
+    }
+  );
 
-      const verdict = isValid ? "VALID" : "REJECTED";
-      const explanation = isValid
-        ? "Jawaban cukup panjang sehingga dianggap asli dan bukan spam."
-        : "Jawaban terlalu pendek. Kemungkinan spam / tidak niat.";
+  // -------------------------------------------------------------
+  // 3. createSurveyMeta
+  // -------------------------------------------------------------
+  server.tool(
+    "createSurveyMeta",
+    "Create a new survey metadata entry and store it in Durable Object storage",
+    {
+      title: z.string().describe("Survey title"),
+      description: z
+        .string()
+        .describe("Short description of the survey")
+        .optional(),
+      questions: z
+        .array(z.string())
+        .min(1)
+        .describe("List of survey questions in order"),
+      creatorWallet: z
+        .string()
+        .describe("Solana public key of the survey creator"),
+      totalReward: z
+        .number()
+        .positive()
+        .describe(
+          "Total reward budget (plain number for now, e.g. SOL or token units)"
+        ),
+      targetResponses: z
+        .number()
+        .int()
+        .positive()
+        .describe("Target number of valid responses"),
+    },
+    async ({
+      title,
+      description,
+      questions,
+      creatorWallet,
+      totalReward,
+      targetResponses,
+    }) => {
+      const id = crypto.randomUUID();
+
+      const survey: Survey = {
+        id,
+        title,
+        description,
+        questions,
+        creatorWallet,
+        totalReward,
+        targetResponses,
+        createdAt: Date.now(),
+      };
+
+      await storage.put(surveyKey(id), survey);
 
       return {
         content: [
           {
             type: "text",
             text: JSON.stringify(
-              { verdict, score, length, explanation },
+              {
+                ok: true,
+                survey,
+              },
               null,
               2
             ),
@@ -57,43 +176,126 @@ export function setupServerTools(server: McpServer) {
     }
   );
 
-  //TODO: Setup additional tools
-  // server.tool(
-  //   'create_todo',
-  //   'Create a new todo item',
-  //   {
-  //     title: z.string().describe('The title of the todo'),
-  //     description: z.string().describe('The description of the todo'),
-  //     status: z.enum([TodoStatus.NOT_STARTED, TodoStatus.IN_PROGRESS, TodoStatus.COMPLETED, TodoStatus.CANCELED]).optional().describe('The status of the todo'),
-  //     due_date: z.string().optional().describe('The due date of the todo'),
-  //   },       
-  //   async ({ title, description, status, due_date }: { 
-  //     title: string; 
-  //     description: string; 
-  //     status?: TodoStatus; 
-  //     due_date?: string; 
-  //   }) => {
-  //     const now = new Date().toISOString();
-  //     const todo: Todo = {
-  //       id: crypto.randomUUID(),
-  //       title,
-  //       description,
-  //       status: status || TodoStatus.NOT_STARTED,
-  //       due_date,
-  //       created_at: now,
-  //       updated_at: now
-  //     };
-  //     console.log("Result: ", todo);
-  //    
-  //       return {
-  //         content: [
-  //           {
-  //             type: "text",
-  //             text: `Todo created with id: ${todo.id}`
-  //           }
-  //         ],
-  //         todo
-  //       };
-  //   }
-  // );
-} 
+  // -------------------------------------------------------------
+  // 4. submitResponse  ✅ dipanggil oleh Agent
+  // -------------------------------------------------------------
+  server.tool(
+  "submitResponse",
+  "Store a respondent's answers for a survey and assign an initial status",
+  {
+    surveyId: z.string(),
+    wallet: z.string(),
+    answers: z.array(z.string()),
+    verdict: z.enum(["VALID", "REJECTED"]),
+    score: z.number(),
+    explanation: z.string(),
+  },
+  async ({ surveyId, wallet, answers, verdict, score, explanation }) => {
+    console.log("[MCP] submitResponse called", {
+      surveyId,
+      wallet,
+      verdict,
+      score,
+    });
+
+    const response: SurveyResponse = {
+      id: crypto.randomUUID(),
+      surveyId,
+      wallet,
+      answers,
+      status: verdict,
+      createdAt: Date.now(),
+    };
+
+    await storage.put(responseKey(surveyId, response.id), response);
+
+    return {
+      content: [
+        {
+          type: "text",
+          text: JSON.stringify(
+            {
+              ok: true,
+              response,
+              verdict,
+              score,
+              explanation,
+            },
+            null,
+            2,
+          ),
+        },
+      ],
+    };
+  },
+);
+
+
+  // -------------------------------------------------------------
+  // 5. listValidWallets
+  // -------------------------------------------------------------
+  server.tool(
+    "listValidWallets",
+    "List all wallets that have at least one VALID response for a survey",
+    {
+      surveyId: z.string().describe("ID of the survey"),
+    },
+    async ({ surveyId }) => {
+      const survey = (await storage.get<Survey>(surveyKey(surveyId))) || null;
+
+      if (!survey) {
+        return {
+          content: [
+            {
+              type: "text",
+              text: JSON.stringify(
+                {
+                  ok: false,
+                  error: `Survey ${surveyId} not found`,
+                },
+                null,
+                2
+              ),
+            },
+          ],
+        };
+      }
+
+      const iter = await storage.list<SurveyResponse>({
+        prefix: responsePrefix(surveyId),
+      });
+
+      const walletSet = new Set<string>();
+      const responses: SurveyResponse[] = [];
+
+      for (const [, value] of iter) {
+        const resp = value as SurveyResponse;
+        responses.push(resp);
+        if (resp.status === "VALID") {
+          walletSet.add(resp.wallet);
+        }
+      }
+
+      const wallets = Array.from(walletSet);
+
+      return {
+        content: [
+          {
+            type: "text",
+            text: JSON.stringify(
+              {
+                ok: true,
+                surveyId,
+                totalResponses: responses.length,
+                totalValidWallets: wallets.length,
+                wallets,
+              },
+              null,
+              2
+            ),
+          },
+        ],
+      };
+    }
+  );
+}

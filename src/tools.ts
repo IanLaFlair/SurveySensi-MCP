@@ -18,15 +18,17 @@ export interface Survey {
   createdAt: number;
 }
 
+
 export interface SurveyResponse {
   id: string;
   surveyId: string;
   wallet: string;
   answers: string[];
   status: ResponseStatus;
+  score: number;        // ⬅️ tambah
+  explanation: string;  // ⬅️ tambah
   createdAt: number;
 }
-
 /**
  * Storage key helpers
  */
@@ -179,7 +181,10 @@ export function setupServerTools(
   // -------------------------------------------------------------
   // 4. submitResponse  ✅ dipanggil oleh Agent
   // -------------------------------------------------------------
-  server.tool(
+ // -------------------------------------------------------------
+// 4. submitResponse
+// -------------------------------------------------------------
+server.tool(
   "submitResponse",
   "Store a respondent's answers for a survey and assign an initial status",
   {
@@ -198,97 +203,16 @@ export function setupServerTools(
       score,
     });
 
-    const response: SurveyResponse = {
-      id: crypto.randomUUID(),
-      surveyId,
-      wallet,
-      answers,
-      status: verdict,
-      createdAt: Date.now(),
-    };
-
-    await storage.put(responseKey(surveyId, response.id), response);
-
-    return {
-      content: [
-        {
-          type: "text",
-          text: JSON.stringify(
-            {
-              ok: true,
-              response,
-              verdict,
-              score,
-              explanation,
-            },
-            null,
-            2,
-          ),
-        },
-      ],
-    };
-  },
-);
-
-
-  // -------------------------------------------------------------
-  // 5. listValidWallets
-  // -------------------------------------------------------------
-  server.tool(
-    "listValidWallets",
-    "List all wallets that have at least one VALID response for a survey",
-    {
-      surveyId: z.string().describe("ID of the survey"),
-    },
-    async ({ surveyId }) => {
-      const survey = (await storage.get<Survey>(surveyKey(surveyId))) || null;
-
-      if (!survey) {
-        return {
-          content: [
-            {
-              type: "text",
-              text: JSON.stringify(
-                {
-                  ok: false,
-                  error: `Survey ${surveyId} not found`,
-                },
-                null,
-                2
-              ),
-            },
-          ],
-        };
-      }
-
-      const iter = await storage.list<SurveyResponse>({
-        prefix: responsePrefix(surveyId),
-      });
-
-      const walletSet = new Set<string>();
-      const responses: SurveyResponse[] = [];
-
-      for (const [, value] of iter) {
-        const resp = value as SurveyResponse;
-        responses.push(resp);
-        if (resp.status === "VALID") {
-          walletSet.add(resp.wallet);
-        }
-      }
-
-      const wallets = Array.from(walletSet);
-
+    const survey = (await storage.get<Survey>(surveyKey(surveyId))) || null;
+    if (!survey) {
       return {
         content: [
           {
             type: "text",
             text: JSON.stringify(
               {
-                ok: true,
-                surveyId,
-                totalResponses: responses.length,
-                totalValidWallets: wallets.length,
-                wallets,
+                ok: false,
+                error: `Survey ${surveyId} not found`,
               },
               null,
               2
@@ -297,5 +221,110 @@ export function setupServerTools(
         ],
       };
     }
-  );
+
+    const status: ResponseStatus = verdict === "VALID" ? "VALID" : "REJECTED";
+    const responseId = crypto.randomUUID();
+
+    const response: SurveyResponse = {
+      id: responseId,
+      surveyId,
+      wallet,
+      answers,
+      status,
+      score,
+      explanation,
+      createdAt: Date.now(),
+    };
+
+    await storage.put(responseKey(surveyId, responseId), response);
+
+    return {
+      content: [
+        {
+          type: "text",
+          text: JSON.stringify(
+            {
+              ok: true,
+              surveyId,
+              response,
+            },
+            null,
+            2
+          ),
+        },
+      ],
+    };
+  }
+);
+
+
+
+
+  // -------------------------------------------------------------
+  // 5. listValidWallets
+  // -------------------------------------------------------------
+  server.tool(
+  "listValidWallets",
+  "List all wallets that have at least one VALID response for a survey",
+  {
+    surveyId: z.string().describe("ID of the survey"),
+  },
+  async ({ surveyId }) => {
+    const survey = (await storage.get<Survey>(surveyKey(surveyId))) || null;
+
+    if (!survey) {
+      return {
+        content: [
+          {
+            type: "text",
+            text: JSON.stringify(
+              {
+                ok: false,
+                error: `Survey ${surveyId} not found`,
+              },
+              null,
+              2
+            ),
+          },
+        ],
+      };
+    }
+
+    const iter = await storage.list<SurveyResponse>({
+      prefix: responsePrefix(surveyId),
+    });
+
+    const walletSet = new Set<string>();
+    const responses: SurveyResponse[] = [];
+
+    for (const [, value] of iter) {
+      const resp = value as SurveyResponse;
+      responses.push(resp);
+      if (resp.status === "VALID") {
+        walletSet.add(resp.wallet);
+      }
+    }
+
+    const wallets = Array.from(walletSet);
+
+    return {
+      content: [
+        {
+          type: "text",
+          text: JSON.stringify(
+            {
+              ok: true,
+              surveyId,
+              totalResponses: responses.length,
+              totalValidWallets: wallets.length,
+              wallets,
+            },
+            null,
+            2
+          ),
+        },
+      ],
+    };
+  }
+);
 }

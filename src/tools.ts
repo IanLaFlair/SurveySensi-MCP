@@ -257,7 +257,163 @@ server.tool(
   }
 );
 
+// 🔹 Ambil 1 survey by ID
+server.tool(
+  "getSurveyById",
+  "Get full survey metadata by its ID",
+  {
+    surveyId: z.string().describe("ID of the survey"),
+  },
+  async ({ surveyId }) => {
+    const survey = (await storage.get<Survey>(surveyKey(surveyId))) || null;
 
+    if (!survey) {
+      return {
+        content: [
+          {
+            type: "text",
+            text: JSON.stringify(
+              {
+                ok: false,
+                error: `Survey ${surveyId} not found`,
+              },
+              null,
+              2
+            ),
+          },
+        ],
+      };
+    }
+
+    return {
+      content: [
+        {
+          type: "text",
+          text: JSON.stringify(
+            {
+              ok: true,
+              survey,
+            },
+            null,
+            2
+          ),
+        },
+      ],
+    };
+  }
+);
+
+// 🔹 List semua survey milik creatorWallet tertentu
+server.tool(
+  "listSurveysByCreator",
+  "List all surveys created by a specific wallet address",
+  {
+    creatorWallet: z.string().describe("Creator wallet address"),
+  },
+  async ({ creatorWallet }) => {
+    const iter = await storage.list<Survey>({ prefix: "survey:" });
+
+    const surveys: Survey[] = [];
+    for (const [, value] of iter) {
+      const s = value as Survey;
+      if (s.creatorWallet === creatorWallet) {
+        surveys.push(s);
+      }
+    }
+
+    // Bisa diperkecil field kalau mau, tapi untuk sekarang kirim full
+    return {
+      content: [
+        {
+          type: "text",
+          text: JSON.stringify(
+            {
+              ok: true,
+              creatorWallet,
+              total: surveys.length,
+              surveys,
+            },
+            null,
+            2
+          ),
+        },
+      ],
+    };
+  }
+);
+
+// 🔹 Detail survey + statistik respon
+server.tool(
+  "getSurveyStats",
+  "Get survey metadata plus basic response stats",
+  {
+    surveyId: z.string(),
+  },
+  async ({ surveyId }) => {
+    const survey = (await storage.get<Survey>(surveyKey(surveyId))) || null;
+
+    if (!survey) {
+      return {
+        content: [
+          {
+            type: "text",
+            text: JSON.stringify(
+              { ok: false, error: `Survey ${surveyId} not found` },
+              null,
+              2
+            ),
+          },
+        ],
+      };
+    }
+
+    const iter = await storage.list<SurveyResponse>({
+      prefix: responsePrefix(surveyId),
+    });
+
+    const walletSet = new Set<string>();
+    const responses: SurveyResponse[] = [];
+    let totalScore = 0;
+    let scoredCount = 0;
+
+    for (const [, value] of iter) {
+      const resp = value as SurveyResponse;
+      responses.push(resp);
+      if (resp.status === "VALID") {
+        walletSet.add(resp.wallet);
+        if (typeof resp.score === "number") {
+          totalScore += resp.score;
+          scoredCount += 1;
+        }
+      }
+    }
+
+    const wallets = Array.from(walletSet);
+
+    return {
+      content: [
+        {
+          type: "text",
+          text: JSON.stringify(
+            {
+              ok: true,
+              survey,
+              stats: {
+                totalResponses: responses.length,
+                totalValidWallets: wallets.length,
+                avgScore:
+                  scoredCount > 0 ? totalScore / scoredCount : null,
+                wallets,
+              },
+            },
+            null,
+            2
+          ),
+        },
+      ],
+    };
+  }
+);
 
 
   // -------------------------------------------------------------

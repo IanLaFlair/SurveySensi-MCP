@@ -1,9 +1,9 @@
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
 
-/**
- * Basic types for SurveySensei
- */
+/* ============================================================
+   TYPES
+============================================================ */
 
 export type ResponseStatus = "PENDING" | "VALID" | "REJECTED";
 
@@ -18,143 +18,118 @@ export interface Survey {
   createdAt: number;
 }
 
-
 export interface SurveyResponse {
   id: string;
   surveyId: string;
   wallet: string;
   answers: string[];
   status: ResponseStatus;
-  score: number;        // ⬅️ tambah
-  explanation: string;  // ⬅️ tambah
+  score: number;
+  explanation: string;
   createdAt: number;
 }
-/**
- * Storage key helpers
- */
+
+/* ============================================================
+   STORAGE HELPERS
+============================================================ */
 
 const surveyKey = (id: string) => `survey:${id}`;
 const responsePrefix = (surveyId: string) => `response:${surveyId}:`;
 const responseKey = (surveyId: string, responseId: string) =>
   `${responsePrefix(surveyId)}${responseId}`;
 
-/**
- * Simple answer evaluation helper
- * (optional; mainly for debugging or future agents)
- */
-function evaluateAnswerText(text: string) {
-  const trimmed = text.trim();
-  const length = trimmed.length;
+/* ============================================================
+   STATS HELPER
+============================================================ */
 
-  const isValid = length >= 40;
-  const score = Math.min(10, Math.floor(length / 20));
+function buildStats_andResponses(
+  responses: SurveyResponse[]
+) {
+  const valid = responses.filter(r => r.status === "VALID");
 
-  const verdict: "VALID" | "REJECTED" = isValid ? "VALID" : "REJECTED";
-  const explanation = isValid
-    ? "Answer is long enough to likely be thoughtful and not spam."
-    : "Answer is too short and likely low-effort or spammy.";
+  const walletSet = new Set(valid.map(r => r.wallet.toLowerCase()));
 
-  return { verdict, score, length, explanation };
+  const avgScore =
+    valid.length > 0
+      ? valid.reduce((s, r) => s + (r.score ?? 0), 0) / valid.length
+      : null;
+
+  return {
+    stats: {
+      totalResponses: responses.length,
+      totalValidWallets: walletSet.size,
+      avgScore,
+      wallets: Array.from(walletSet),
+    },
+    responses, // ⬅️ FULL RESPONSE LIST (NEW)
+  };
 }
 
-/**
- * Main entry: register all tools
- */
-export function setupServerTools(
-  server: McpServer,
-  storage: DurableObjectStorage
-) {
-  // -------------------------------------------------------------
-  // 1. Health check
-  // -------------------------------------------------------------
-  server.tool(
-    "ping",
-    "Ping test tool to verify MCP server is responding",
-    {},
-    async () => {
-      return {
-        content: [
-          {
-            type: "text",
-            text: "pong 🚀 SurveySensei MCP + Durable Object is alive!",
-          },
-        ],
-      };
-    }
-  );
+/* ============================================================
+   MAIN SETUP
+============================================================ */
 
-  // -------------------------------------------------------------
-  // 2. Standalone answer scoring (optional debugging tool)
-  // -------------------------------------------------------------
+export function setupServerTools(server: McpServer, storage: DurableObjectStorage) {
+
+  /* -----------------------------------------------------------
+     1. HEALTH CHECK
+  ------------------------------------------------------------ */
+  server.tool("ping", "Ping test", {}, async () => ({
+    content: [{ type: "text", text: "pong 🚀 SurveySensei MCP operational!" }],
+  }));
+
+  /* -----------------------------------------------------------
+     2. SCORE SINGLE ANSWER (OPTIONAL)
+  ------------------------------------------------------------ */
   server.tool(
     "scoreSurveyAnswer",
-    "Score and validate a single survey answer using simple heuristics",
-    {
-      answer: z.string().describe("Free-text survey answer from a respondent"),
-    },
+    "Debug scoring tool",
+    { answer: z.string() },
     async ({ answer }) => {
-      const result = evaluateAnswerText(answer);
+      const trimmed = answer.trim();
+      const len = trimmed.length;
+      const verdict = len >= 40 ? "VALID" : "REJECTED";
+      const score = Math.min(10, Math.floor(len / 20));
 
       return {
         content: [
           {
             type: "text",
-            text: JSON.stringify(result, null, 2),
+            text: JSON.stringify(
+              { verdict, score, length: len },
+              null,
+              2
+            ),
           },
         ],
       };
     }
   );
 
-  // -------------------------------------------------------------
-  // 3. createSurveyMeta
-  // -------------------------------------------------------------
+  /* -----------------------------------------------------------
+     3. CREATE SURVEY META
+  ------------------------------------------------------------ */
   server.tool(
     "createSurveyMeta",
-    "Create a new survey metadata entry and store it in Durable Object storage",
+    "Create metadata for a survey",
     {
-      title: z.string().describe("Survey title"),
-      description: z
-        .string()
-        .describe("Short description of the survey")
-        .optional(),
-      questions: z
-        .array(z.string())
-        .min(1)
-        .describe("List of survey questions in order"),
-      creatorWallet: z
-        .string()
-        .describe("Solana public key of the survey creator"),
-      totalReward: z
-        .number()
-        .positive()
-        .describe(
-          "Total reward budget (plain number for now, e.g. SOL or token units)"
-        ),
-      targetResponses: z
-        .number()
-        .int()
-        .positive()
-        .describe("Target number of valid responses"),
+      title: z.string(),
+      description: z.string().optional(),
+      questions: z.array(z.string()).min(1),
+      creatorWallet: z.string(),
+      totalReward: z.number().positive(),
+      targetResponses: z.number().int().positive(),
     },
-    async ({
-      title,
-      description,
-      questions,
-      creatorWallet,
-      totalReward,
-      targetResponses,
-    }) => {
+    async (args) => {
       const id = crypto.randomUUID();
-
       const survey: Survey = {
         id,
-        title,
-        description,
-        questions,
-        creatorWallet,
-        totalReward,
-        targetResponses,
+        title: args.title,
+        description: args.description,
+        questions: args.questions,
+        creatorWallet: args.creatorWallet,
+        totalReward: args.totalReward,
+        targetResponses: args.targetResponses,
         createdAt: Date.now(),
       };
 
@@ -164,10 +139,167 @@ export function setupServerTools(
         content: [
           {
             type: "text",
+            text: JSON.stringify({ ok: true, survey }, null, 2),
+          },
+        ],
+      };
+    }
+  );
+
+  /* -----------------------------------------------------------
+     4. SUBMIT RESPONSE
+  ------------------------------------------------------------ */
+  server.tool(
+    "submitResponse",
+    "Store response for a survey",
+    {
+      surveyId: z.string(),
+      wallet: z.string(),
+      answers: z.array(z.string()),
+      verdict: z.enum(["VALID", "REJECTED"]),
+      score: z.number(),
+      explanation: z.string(),
+    },
+    async ({ surveyId, wallet, answers, verdict, score, explanation }) => {
+      const survey = await storage.get<Survey>(surveyKey(surveyId));
+      if (!survey) {
+        return {
+          content: [
+            {
+              type: "text",
+              text: JSON.stringify(
+                { ok: false, error: `Survey ${surveyId} not found` },
+                null,
+                2
+              ),
+            },
+          ],
+        };
+      }
+
+      const responseId = crypto.randomUUID();
+      const response: SurveyResponse = {
+        id: responseId,
+        surveyId,
+        wallet,
+        answers,
+        status: verdict,
+        score,
+        explanation,
+        createdAt: Date.now(),
+      };
+
+      await storage.put(responseKey(surveyId, responseId), response);
+
+      return {
+        content: [
+          {
+            type: "text",
+            text: JSON.stringify({ ok: true, response }, null, 2),
+          },
+        ],
+      };
+    }
+  );
+
+  /* -----------------------------------------------------------
+     5. GET SURVEY BY ID
+  ------------------------------------------------------------ */
+  server.tool(
+    "getSurveyById",
+    "Fetch a survey metadata only",
+    { surveyId: z.string() },
+    async ({ surveyId }) => {
+      const survey = await storage.get<Survey>(surveyKey(surveyId));
+
+      if (!survey) {
+        return {
+          content: [{ type: "text", text: JSON.stringify({ ok: false, error: "SURVEY_NOT_FOUND" }) }],
+        };
+      }
+
+      return {
+        content: [{ type: "text", text: JSON.stringify({ ok: true, survey }, null, 2) }],
+      };
+    }
+  );
+
+  /* -----------------------------------------------------------
+     6. LIST SURVEYS BY CREATOR (WITH STATS)
+  ------------------------------------------------------------ */
+  server.tool(
+    "listSurveysByCreator",
+    "List surveys + stats for a creator",
+    { creatorWallet: z.string() },
+    async ({ creatorWallet }) => {
+      const iter = await storage.list<Survey>({ prefix: "survey:" });
+      const surveys: any[] = [];
+
+      for (const [, s] of iter) {
+        const survey = s as Survey;
+        if (survey.creatorWallet !== creatorWallet) continue;
+
+        // load responses
+        const respIter = await storage.list<SurveyResponse>({
+          prefix: responsePrefix(survey.id),
+        });
+
+        const responses = [...respIter].map(([, r]) => r as SurveyResponse);
+
+        const { stats } = buildStats_andResponses(responses);
+
+        surveys.push({
+          ...survey,
+          stats,
+        });
+      }
+
+      return {
+        content: [
+          {
+            type: "text",
+            text: JSON.stringify({ ok: true, creatorWallet, surveys }, null, 2),
+          },
+        ],
+      };
+    }
+  );
+
+  /* -----------------------------------------------------------
+     7. GET SURVEY DETAIL (META + STATS + RESPONSES)
+  ------------------------------------------------------------ */
+  server.tool(
+    "getSurveyStats",
+    "Survey detail with stats + full responses",
+    { surveyId: z.string() },
+    async ({ surveyId }) => {
+      const survey = await storage.get<Survey>(surveyKey(surveyId));
+      if (!survey) {
+        return {
+          content: [
+            { type: "text", text: JSON.stringify({ ok: false, error: "SURVEY_NOT_FOUND" }) },
+          ],
+        };
+      }
+
+      const iter = await storage.list<SurveyResponse>({
+        prefix: responsePrefix(surveyId),
+      });
+
+      const responses = [...iter].map(([, r]) => r as SurveyResponse);
+
+      const { stats, responses: fullResponses } = buildStats_andResponses(responses);
+
+      return {
+        content: [
+          {
+            type: "text",
             text: JSON.stringify(
               {
                 ok: true,
                 survey,
+                stats,
+                responses: fullResponses, // full list
               },
               null,
               2
@@ -177,310 +309,4 @@ export function setupServerTools(
       };
     }
   );
-
-  // -------------------------------------------------------------
-  // 4. submitResponse  ✅ dipanggil oleh Agent
-  // -------------------------------------------------------------
- // -------------------------------------------------------------
-// 4. submitResponse
-// -------------------------------------------------------------
-server.tool(
-  "submitResponse",
-  "Store a respondent's answers for a survey and assign an initial status",
-  {
-    surveyId: z.string(),
-    wallet: z.string(),
-    answers: z.array(z.string()),
-    verdict: z.enum(["VALID", "REJECTED"]),
-    score: z.number(),
-    explanation: z.string(),
-  },
-  async ({ surveyId, wallet, answers, verdict, score, explanation }) => {
-    console.log("[MCP] submitResponse called", {
-      surveyId,
-      wallet,
-      verdict,
-      score,
-    });
-
-    const survey = (await storage.get<Survey>(surveyKey(surveyId))) || null;
-    if (!survey) {
-      return {
-        content: [
-          {
-            type: "text",
-            text: JSON.stringify(
-              {
-                ok: false,
-                error: `Survey ${surveyId} not found`,
-              },
-              null,
-              2
-            ),
-          },
-        ],
-      };
-    }
-
-    const status: ResponseStatus = verdict === "VALID" ? "VALID" : "REJECTED";
-    const responseId = crypto.randomUUID();
-
-    const response: SurveyResponse = {
-      id: responseId,
-      surveyId,
-      wallet,
-      answers,
-      status,
-      score,
-      explanation,
-      createdAt: Date.now(),
-    };
-
-    await storage.put(responseKey(surveyId, responseId), response);
-
-    return {
-      content: [
-        {
-          type: "text",
-          text: JSON.stringify(
-            {
-              ok: true,
-              surveyId,
-              response,
-            },
-            null,
-            2
-          ),
-        },
-      ],
-    };
-  }
-);
-
-// 🔹 Ambil 1 survey by ID
-server.tool(
-  "getSurveyById",
-  "Get full survey metadata by its ID",
-  {
-    surveyId: z.string().describe("ID of the survey"),
-  },
-  async ({ surveyId }) => {
-    const survey = (await storage.get<Survey>(surveyKey(surveyId))) || null;
-
-    if (!survey) {
-      return {
-        content: [
-          {
-            type: "text",
-            text: JSON.stringify(
-              {
-                ok: false,
-                error: `Survey ${surveyId} not found`,
-              },
-              null,
-              2
-            ),
-          },
-        ],
-      };
-    }
-
-    return {
-      content: [
-        {
-          type: "text",
-          text: JSON.stringify(
-            {
-              ok: true,
-              survey,
-            },
-            null,
-            2
-          ),
-        },
-      ],
-    };
-  }
-);
-
-// 🔹 List semua survey milik creatorWallet tertentu
-server.tool(
-  "listSurveysByCreator",
-  "List all surveys created by a specific wallet address",
-  {
-    creatorWallet: z.string().describe("Creator wallet address"),
-  },
-  async ({ creatorWallet }) => {
-    const iter = await storage.list<Survey>({ prefix: "survey:" });
-
-    const surveys: Survey[] = [];
-    for (const [, value] of iter) {
-      const s = value as Survey;
-      if (s.creatorWallet === creatorWallet) {
-        surveys.push(s);
-      }
-    }
-
-    // Bisa diperkecil field kalau mau, tapi untuk sekarang kirim full
-    return {
-      content: [
-        {
-          type: "text",
-          text: JSON.stringify(
-            {
-              ok: true,
-              creatorWallet,
-              total: surveys.length,
-              surveys,
-            },
-            null,
-            2
-          ),
-        },
-      ],
-    };
-  }
-);
-
-// 🔹 Detail survey + statistik respon
-server.tool(
-  "getSurveyStats",
-  "Get survey metadata plus basic response stats",
-  {
-    surveyId: z.string(),
-  },
-  async ({ surveyId }) => {
-    const survey = (await storage.get<Survey>(surveyKey(surveyId))) || null;
-
-    if (!survey) {
-      return {
-        content: [
-          {
-            type: "text",
-            text: JSON.stringify(
-              { ok: false, error: `Survey ${surveyId} not found` },
-              null,
-              2
-            ),
-          },
-        ],
-      };
-    }
-
-    const iter = await storage.list<SurveyResponse>({
-      prefix: responsePrefix(surveyId),
-    });
-
-    const walletSet = new Set<string>();
-    const responses: SurveyResponse[] = [];
-    let totalScore = 0;
-    let scoredCount = 0;
-
-    for (const [, value] of iter) {
-      const resp = value as SurveyResponse;
-      responses.push(resp);
-      if (resp.status === "VALID") {
-        walletSet.add(resp.wallet);
-        if (typeof resp.score === "number") {
-          totalScore += resp.score;
-          scoredCount += 1;
-        }
-      }
-    }
-
-    const wallets = Array.from(walletSet);
-
-    return {
-      content: [
-        {
-          type: "text",
-          text: JSON.stringify(
-            {
-              ok: true,
-              survey,
-              stats: {
-                totalResponses: responses.length,
-                totalValidWallets: wallets.length,
-                avgScore:
-                  scoredCount > 0 ? totalScore / scoredCount : null,
-                wallets,
-              },
-            },
-            null,
-            2
-          ),
-        },
-      ],
-    };
-  }
-);
-
-
-  // -------------------------------------------------------------
-  // 5. listValidWallets
-  // -------------------------------------------------------------
-  server.tool(
-  "listValidWallets",
-  "List all wallets that have at least one VALID response for a survey",
-  {
-    surveyId: z.string().describe("ID of the survey"),
-  },
-  async ({ surveyId }) => {
-    const survey = (await storage.get<Survey>(surveyKey(surveyId))) || null;
-
-    if (!survey) {
-      return {
-        content: [
-          {
-            type: "text",
-            text: JSON.stringify(
-              {
-                ok: false,
-                error: `Survey ${surveyId} not found`,
-              },
-              null,
-              2
-            ),
-          },
-        ],
-      };
-    }
-
-    const iter = await storage.list<SurveyResponse>({
-      prefix: responsePrefix(surveyId),
-    });
-
-    const walletSet = new Set<string>();
-    const responses: SurveyResponse[] = [];
-
-    for (const [, value] of iter) {
-      const resp = value as SurveyResponse;
-      responses.push(resp);
-      if (resp.status === "VALID") {
-        walletSet.add(resp.wallet);
-      }
-    }
-
-    const wallets = Array.from(walletSet);
-
-    return {
-      content: [
-        {
-          type: "text",
-          text: JSON.stringify(
-            {
-              ok: true,
-              surveyId,
-              totalResponses: responses.length,
-              totalValidWallets: wallets.length,
-              wallets,
-            },
-            null,
-            2
-          ),
-        },
-      ],
-    };
-  }
-);
 }
